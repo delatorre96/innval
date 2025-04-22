@@ -1,14 +1,17 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from scipy.stats import shapiro, ttest_ind, mannwhitneyu, anderson_ksamp
-from statsmodels.stats.multitest import multipletests
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import r2_score, accuracy_score
+from sklearn.utils import resample
+from scipy.stats import shapiro, ttest_ind, mannwhitneyu#, anderson_ksamp
+from scipy.stats import zscore
+from statsmodels.stats.multitest import multipletests
 import random
 from tqdm import tqdm 
-import pickle
-from scipy.stats import zscore
+
+
 
 def cargarLimpiarDataFrame(url = '../mRNA_seq/mRNA_seq_AS_Control_LncRNA_identificados.xlsx'):
     df = pd.read_excel(url)
@@ -117,25 +120,51 @@ def preprocesadoScale(df1):
     df_scaled2['Grupo_Tratamiento'] = df_scaled2['Grupo_Tratamiento'].astype(int)
     return df_scaled2
 
-def RandomForestBootstrap (df_scaled2):
-    X = df_scaled2.drop(columns=[ "Grupo_Tratamiento"])  
+
+def RandomForestBootstrap(df_scaled2, n_iteraciones):
+    X = df_scaled2.drop(columns=["Grupo_Tratamiento"])  
     y = df_scaled2["Grupo_Tratamiento"]
-    n_iteraciones = 5000
+
     max_depth_options = list(range(3, 10))
     min_samples_split_options = list(range(2, 30))
     min_samples_leaf_options = list(range(1, 15))
-    n_estimators_options = list(range(1,200))
+    n_estimators_options = list(range(1, 200))
     criterions = ['gini', 'entropy']
+
     resultados = []
 
     for i in tqdm(range(n_iteraciones), desc="Iterando modelos"):
-        ##BOOTSTRAP
-        sample_indices = np.random.choice(range(len(X)), size=len(X), replace=True)
-        X_train = X.iloc[sample_indices]
-        y_train = y.iloc[sample_indices]
-        test_mask = ~np.isin(range(len(X)), sample_indices)
-        X_test = X.iloc[test_mask]
-        y_test = y.iloc[test_mask]
+        # Bootstrap con balanceo
+        df_bootstrap = df_scaled2.sample(n=len(df_scaled2), replace=True)
+
+        # Separar clases
+        clase_0 = df_bootstrap[df_bootstrap["Grupo_Tratamiento"] == 0]
+        clase_1 = df_bootstrap[df_bootstrap["Grupo_Tratamiento"] == 1]
+
+        # Balancear
+        if len(clase_0) > len(clase_1):
+            clase_1_upsampled = resample(clase_1,
+                                         replace=True,
+                                         n_samples=len(clase_0),
+                                         random_state=None)
+            df_balanced = pd.concat([clase_0, clase_1_upsampled])
+        else:
+            clase_0_upsampled = resample(clase_0,
+                                         replace=True,
+                                         n_samples=len(clase_1),
+                                         random_state=None)
+            df_balanced = pd.concat([clase_1, clase_0_upsampled])
+
+        # Mezclar
+        df_balanced = df_balanced.sample(frac=1).reset_index(drop=True)
+
+        X_train = df_balanced.drop(columns=["Grupo_Tratamiento"])
+        y_train = df_balanced["Grupo_Tratamiento"]
+
+        # OOB set
+        oob_mask = ~df_scaled2.index.isin(df_balanced.index)
+        X_test = X[oob_mask]
+        y_test = y[oob_mask]
 
         # Hiperparámetros aleatorios
         n_estimators = random.choice(n_estimators_options)
@@ -144,41 +173,41 @@ def RandomForestBootstrap (df_scaled2):
         min_samples_leaf = random.choice(min_samples_leaf_options)
         criterion = random.choice(criterions)
 
-        #Modelo
-        rf  = RandomForestClassifier(
+        # Modelo
+        rf = RandomForestClassifier(
             n_estimators=n_estimators,
             criterion=criterion,
             max_depth=max_depth,
             min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf,
-            random_state=random.choice(list(range(1,100000000)))
+            random_state=random.randint(1, 100000000)
         )
         rf.fit(X_train, y_train)
         y_train_pred = rf.predict(X_train)
-        y_test_pred = rf.predict(X_test)
+        y_test_pred = rf.predict(X_test) if not X_test.empty else []
 
         train_accuracy = accuracy_score(y_train, y_train_pred)
-        test_accuracy = accuracy_score(y_test, y_test_pred)
+        test_accuracy = accuracy_score(y_test, y_test_pred) if len(y_test_pred) > 0 else np.nan
+
         important_features = []
         for idx, f in enumerate(X.columns):
             importance = rf.feature_importances_[idx]
             if importance > 0:
                 important_features.append((f, importance))
-        if important_features:
-            for feature, importance in important_features:
-                resultados.append({
-                    'Iteration': i,
-                    'Feature': feature,
-                    'Importance': importance,
-                    'Train Accuracy': train_accuracy,
-                    'Test Accuracy': test_accuracy
-                })
 
-    # Crear un DataFrame con los resultados
-    df_results_rf = pd.DataFrame(resultados)
-    return df_results_rf
+        for feature, importance in important_features:
+            resultados.append({
+                'Iteration': i,
+                'Feature': feature,
+                'Importance': importance,
+                'Train Accuracy': train_accuracy,
+                'Test Accuracy': test_accuracy
+            })
+    df_resultados_rf = pd.DataFrame(resultados)
+    return df_resultados_rf
 
-def elegirVarsImp(df_results_rf,thresDesv = 1):
+
+def elegirVarsImp_rf(df_results_rf,n_iteraciones,thresDesv = 1):
     """
     Elegimos variables más importantes en base a la cantidad de veces que más se repite en los random forests y en base a la importancia más alta
     Las frecuencias e importancias más altas se eligen en base a cuántas desviaciones estandar se alejan por arriba de la media usando z-score.
@@ -191,7 +220,7 @@ def elegirVarsImp(df_results_rf,thresDesv = 1):
     ).reset_index()
 
     # Calcular porcentaje sobre el total
-    temp_df['Frecuencia'] = temp_df['Conteo'] / 5000
+    temp_df['Frecuencia'] = temp_df['Conteo'] / n_iteraciones
 
     # Ordenar por porcentaje y promedio de importancia
     mostImpFeaturesTree = temp_df.sort_values(by=['Frecuencia', 'Promedio_Importancia'], ascending=False)
@@ -206,9 +235,11 @@ def elegirVarsImp(df_results_rf,thresDesv = 1):
     z_scores = zscore(imp_data)
     outliers = imp_data[z_scores > thresDesv]
     minImp = outliers.min()
-    return mostImpFeaturesTree[(mostImpFeaturesTree['Frecuencia']>=minFrec) & (mostImpFeaturesTree['Promedio_Importancia'] >= minImp)]
+    mostImpFeaturesTree = mostImpFeaturesTree[(mostImpFeaturesTree['Frecuencia']>=minFrec) & (mostImpFeaturesTree['Promedio_Importancia'] >= minImp)]
+    print(len(df_results_rf['Feature'].unique()), 'variables ->', len(mostImpFeaturesTree),'variables')
+    return mostImpFeaturesTree
 
-def LogitBootstrap(df,cols):
+def LogitBootstrap(df,cols, n_iteraciones):
     #cols =mostImpFeaturesTree['Feature'].to_list()
     df2 = df[cols]
     df2 = df2.reset_index()
@@ -299,11 +330,12 @@ def LogitBootstrap(df,cols):
 
     # Convertir a DataFrame final
     df_resultados_log = pd.DataFrame(resultados)
+    
     return df_resultados_log
 
-def elegirVarsImp(df_resultados_log,thresDesv = 1):
-    #df_resultados = df_resultados[df_resultados['Coeficiente'] != 0]
-    temp_df = df_resultados_log.groupby('Variable').agg(
+def elegirVarsImp_log(df_resultados_log):
+    df_resultados_log2 = df_resultados_log[df_resultados_log['Coeficiente'] != 0]
+    temp_df = df_resultados_log2.groupby('Variable').agg(
         Conteo=('Variable', 'count'),
         Promedio_Coeficiente=('Coeficiente', 'mean'),
         Promedio_Train_accuracy=('Accuracy_Train','mean'),
@@ -311,4 +343,5 @@ def elegirVarsImp(df_resultados_log,thresDesv = 1):
     ).reset_index()
     temp_df['Importancia (abs)'] = np.abs(temp_df['Promedio_Coeficiente'])
     temp_df = temp_df.sort_values(by=['Importancia (abs)'], ascending=False).drop(columns='Importancia (abs)').reset_index(drop=True)
+    print(len(df_resultados_log['Variable'].unique()),'variables', '->', len(df_resultados_log2['Variable'].unique()),'variables')
     return temp_df

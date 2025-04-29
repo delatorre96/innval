@@ -38,10 +38,10 @@ def eliminarLecturasBajas(df, lecturaBaja = 0.6, proporcionLecturasBajas = 0.5):
     df1 = df.drop(columns=vars_excluir)
 
     print(len(df.columns),'variables →',len(df1.columns),'variables')
-    return df1 
+    return df
 
-def eliminarCorrelacionesAltas(df1,threshold = 0.8):
-    correlaciones_vars = df1.corr(method = 'spearman') #usar mejor Spearman, rank correlation
+def eliminarCorrelacionesAltas(df,threshold = 0.8):
+    correlaciones_vars = df.corr(method = 'spearman') #usar mejor Spearman, rank correlation
     columns_to_drop = set()
 
     # Iterar sobre la matriz de correlación y eliminar las columnas con correlación > 0.95
@@ -50,38 +50,38 @@ def eliminarCorrelacionesAltas(df1,threshold = 0.8):
             if abs(correlaciones_vars.iloc[i, j]) > threshold:
                 colname = correlaciones_vars.columns[i]
                 columns_to_drop.add(colname)
-    nvarsAntes = len(df1.columns)        
-    df1 = df1.drop(columns=columns_to_drop)   
-    print(nvarsAntes,'variables →',len(df1.columns),'variables')
-    return df1
+    nvarsAntes = len(df.columns)        
+    df = df.drop(columns=columns_to_drop)   
+    print(nvarsAntes,'variables →',len(df.columns),'variables')
+    return df
 
-def eliminarTests (df1):
+def eliminarTests (df):
     ####Dividmos el data set en dos: Uno de tratamiento y otro de control
 
-    df1_ct = df1.copy().reset_index()
-    df1_ct['Grupo'] = np.where(df1_ct['index'].str.contains('A'), 'Tratamiento', 
-                np.where(df1_ct['index'].str.contains('C'), 'Control', 'Otro'))
-    df1_ct = df1_ct.set_index('index')
-    df1_trnto = df1_ct[df1_ct['Grupo'] == 'Tratamiento'].drop('Grupo', axis = 1)
-    df1_ctrl = df1_ct[df1_ct['Grupo'] == 'Control'].drop('Grupo', axis = 1)
-    df1_ct = df1_ct.drop('Grupo', axis = 1)
-    variables = df1_ct.columns  
+    df_ct = df.copy().reset_index()
+    df_ct['Grupo'] = np.where(df_ct['index'].str.contains('A'), 'Tratamiento', 
+                np.where(df_ct['index'].str.contains('C'), 'Control', 'Otro'))
+    df_ct = df_ct.set_index('index')
+    df_trnto = df_ct[df_ct['Grupo'] == 'Tratamiento'].drop('Grupo', axis = 1)
+    df_ctrl = df_ct[df_ct['Grupo'] == 'Control'].drop('Grupo', axis = 1)
+    df_ct = df_ct.drop('Grupo', axis = 1)
+    variables = df_ct.columns  
     p_values = []
     tests = []  # Para almacenar qué test se usó en cada variable
 
     for var in variables:
         # Prueba de normalidad en ambos grupos
-        p_value_trnto = shapiro(df1_trnto[var]).pvalue
-        p_value_ctrl = shapiro(df1_ctrl[var]).pvalue
+        p_value_trnto = shapiro(df_trnto[var]).pvalue
+        p_value_ctrl = shapiro(df_ctrl[var]).pvalue
         # Primero comprobamos si los dos grupos siguen una distribución normal o no usando el test Shapiro-Wilk (para muestras pequeñas)
         
         if p_value_trnto > 0.05 and p_value_ctrl > 0.05:   # Si es normal, usamos t-student
             #Los dos p_values son normales → Usamos T_student
-            stat, p_value = ttest_ind(df1_trnto[var], df1_ctrl[var], equal_var=False)  # Si el p-valor es menor que 0.05, diferencias significativas, Hay diferencias significativas entre los dos grupos
+            stat, p_value = ttest_ind(df_trnto[var], df_ctrl[var], equal_var=False)  # Si el p-valor es menor que 0.05, diferencias significativas, Hay diferencias significativas entre los dos grupos
             test_name = 't-test'
         else:
             # Al menos un grupo no es normal → Usamos Mann-Whitney U
-            stat, p_value = mannwhitneyu(df1_trnto[var], df1_ctrl[var], alternative='two-sided')
+            stat, p_value = mannwhitneyu(df_trnto[var], df_ctrl[var], alternative='two-sided')
             test_name = 'Mann-Whitney'
 
         tests.append(test_name)

@@ -14,13 +14,13 @@ from tqdm import tqdm
 
 
 def cargarLimpiarDataFrame(url = '../mRNA_seq/mRNA_seq_AS_Control_LncRNA_identificados.xlsx'):
-    df = pd.read_excel(url)
+    df_raw = pd.read_excel(url)
     #Eliminamos todas las variables que Norm ya que prefiero hacer nuestra propia normalizacion
-    df = df.loc[:, ~df.columns.str.contains('Raw')]
+    df_raw = df_raw.loc[:, ~df_raw.columns.str.contains('Norm')]
     #trasponemos para que cada fila sea un paciente y cada columna sea una variable , incluimos el simbolo de hgnc como nombre de columnas  y eliminamos variables que son string
-    df = df.set_index('hgnc_symbol').drop(['description','gene_biotype','chromosome_name'],axis = 1).T
-
-    return df
+    df_raw = df_raw.set_index('hgnc_symbol').drop(['description','gene_biotype','chromosome_name'],axis = 1).T
+    df_raw_normalizado = (df_raw - df_raw.mean())/df_raw.std()
+    return df_raw_normalizado
 
 def eliminarLecturasBajas(df, lecturaBaja = 0.6, proporcionLecturasBajas = 0.5):
     estadisticas = pd.DataFrame({
